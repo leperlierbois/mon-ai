@@ -50,6 +50,12 @@ main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 .sources a{color:var(--muted)}
 .error{color:var(--danger)}
 .empty{color:var(--muted);text-align:center;margin:auto;padding:24px}
+button.mic{padding:8px 12px;font-size:18px;line-height:1}
+button.mic.on{background:var(--danger);border-color:var(--danger);color:#fff;animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.6}}
+.speak{margin-top:6px;font-size:13px;padding:4px 10px}
+.about-row{position:relative}
+.about-row .mic{position:absolute;right:8px;bottom:10px}
 .empty h2{color:var(--text);margin:0 0 8px}
 .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:14px}
 .chips button{font-size:14px}
@@ -121,19 +127,24 @@ ul.rules li span{flex:1;white-space:pre-wrap}
       <section class="card">
         <h2>🚫 Mes règles et limites</h2>
         <p class="hint">Ce que l'IA doit toujours faire ou ne jamais faire. Ces règles sont envoyées avec chaque demande et passent avant tout le reste.</p>
-        <div class="row"><input type="text" id="ruleInput" placeholder="Ex. : Ne jamais inventer une source"><button class="primary" id="addRule">Ajouter</button></div>
+        <div class="row"><input type="text" id="ruleInput" placeholder="Ex. : Ne jamais inventer une source"><button type="button" class="mic" data-target="ruleInput" title="Dicter">🎤</button><button class="primary" id="addRule">Ajouter</button></div>
         <ul class="rules" id="rulesList"></ul>
       </section>
 
       <section class="card">
         <h2>🧑 À propos de moi</h2>
         <p class="hint">Facultatif : qui tu es, ce que tu fais, ton style préféré. L'IA s'en sert pour mieux t'aider.</p>
-        <textarea class="field" id="about" placeholder="Ex. : Je m'appelle..., je travaille dans..., réponds de façon courte et directe."></textarea>
+        <div class="about-row"><textarea class="field" id="about" style="padding-right:56px" placeholder="Ex. : Je m'appelle..., je travaille dans..., réponds de façon courte et directe."></textarea><button type="button" class="mic" data-target="about" title="Dicter">🎤</button></div>
       </section>
 
       <section class="card">
         <h2>🌐 Web</h2>
         <label><input type="checkbox" id="webOn"> Autoriser la recherche web et la lecture de liens</label>
+      </section>
+      <section class="card">
+        <h2>🔊 Voix</h2>
+        <p class="hint">Touche 🎤 pour parler au lieu d'écrire. Touche « 🔊 Écouter » sous une réponse pour l'entendre.</p>
+        <label><input type="checkbox" id="autoSpeak"> Lire automatiquement chaque réponse à voix haute</label>
       </section>
 
       <section class="card">
@@ -149,7 +160,8 @@ ul.rules li span{flex:1;white-space:pre-wrap}
   </div>
 </main>
 <form id="composer">
-  <textarea id="input" rows="1" placeholder="Demande-moi quelque chose, ou colle un lien…"></textarea>
+  <button type="button" class="mic" data-target="input" title="Parler">🎤</button>
+  <textarea id="input" rows="1" placeholder="Écris ou touche 🎤 pour parler…"></textarea>
   <button class="primary" id="sendBtn" type="submit">Envoyer</button>
 </form>
 
@@ -266,7 +278,7 @@ function renderChat() {
     if (m.role === "user" && typeof m.content === "string") {
       const d = document.createElement("div"); d.className = "msg user"; d.textContent = m.content; w.appendChild(d);
     } else if (m.role === "assistant") {
-      const d = document.createElement("div"); d.className = "msg assistant"; d.innerHTML = assistantHTML(m.content, "", m.sources); w.appendChild(d);
+      const d = document.createElement("div"); d.className = "msg assistant"; d.innerHTML = assistantHTML(m.content, "", m.sources); addSpeak(d, m.content); w.appendChild(d);
     }
   }
   chat.appendChild(w);
@@ -282,11 +294,11 @@ function friendlyError(e) {
   if (e instanceof Anthropic.RateLimitError) return "Trop de demandes d'un coup. Réessaie dans un instant.";
   if (e instanceof Anthropic.APIConnectionError) return "Connexion impossible. Vérifie ta connexion internet.";
   if (/credit balance/i.test(msg)) return "Crédit insuffisant sur ton compte Anthropic.";
-  if (e.status === 429) return "Limite gratuite de Gemini atteinte pour le moment. Attends une minute (ou demain si c'est la limite du jour), ou choisis un autre modèle Gemini dans ⚙︎ Réglages.";
+  if (e.status === 429) return "Google refuse pour l'instant (limite gratuite). J'ai essayé plusieurs modèles gratuits sans succès. Attends une minute et réessaie. Détail de Google : " + msg.slice(0, 300);
   if (e.status === 400 && /api key/i.test(msg)) return "Clé Gemini invalide. Vérifie-la dans ⚙︎ Réglages.";
   if (e.status === 403) return "Clé Gemini refusée. Vérifie-la dans ⚙︎ Réglages.";
   if (e.status === 404) return "Ce modèle Gemini n'existe plus. Choisis-en un autre dans ⚙︎ Réglages.";
-  if (e instanceof TypeError) return "Connexion impossible. Vérifie ta connexion internet.";
+  if (e instanceof TypeError && /fetch|load failed|network/i.test(msg)) return "Connexion impossible. Vérifie ta connexion internet.";
   return msg;
 }
 
@@ -303,6 +315,8 @@ async function send(text) {
   saveConvs(); renderConvList(); renderChat();
 
   busy = true; $("sendBtn").disabled = true;
+  stopListening(); stopSpeaking();
+  if (settings.autoSpeak) unlockSpeech();
   const bubble = document.createElement("div");
   bubble.className = "msg assistant";
   bubble.innerHTML = `<div class="status">Réflexion…</div>`;
@@ -319,7 +333,9 @@ async function send(text) {
     c.updated = Date.now();
     saveConvs();
     bubble.innerHTML = assistantHTML(reply.content, "", reply.sources);
+    try { addSpeak(bubble, reply.content); if (settings.autoSpeak) speak(textOf(reply.content)); } catch (err) { console.warn(err); }
   } catch (e) {
+    console.error(e);
     c.messages.pop(); // on retire la question sans réponse pour garder l'historique valide
     saveConvs();
     bubble.innerHTML = `<div class="error">⚠️ ${esc(friendlyError(e))}</div>`;
@@ -376,55 +392,76 @@ async function askClaude(c, paint) {
 // ----- Gemini (Google) -----
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
 
+// Ordre de préférence des modèles gratuits : versions stables Flash-Lite, puis Flash, puis le reste. Jamais "pro" (pas gratuit).
+function rankModels(ids) {
+  const ver = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || "0");
+  const score = (id) => (/preview|exp/.test(id) ? 20 : 0) + (/latest/.test(id) ? 10 : 0) + (/flash-lite/.test(id) ? 0 : /flash/.test(id) ? 1 : 5);
+  return ids.filter(id => !/pro/.test(id)).sort((a, b) => score(a) - score(b) || ver(b) - ver(a) || a.localeCompare(b));
+}
+
+async function geminiStream(model, contents, tools, paint) {
+  let text = "", sources = new Map();
+  const res = await fetch(`${GEMINI}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": settings.geminiKey },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt() + (!tools.some(t => t.google_search) && settings.web ? "\n(La recherche Google n'est pas disponible en ce moment : si on te demande une info récente, précise que tu ne peux pas la vérifier.)" : "") }] },
+      contents,
+      ...(tools.length ? { tools } : {}),
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body?.error?.message || `Erreur ${res.status}`); err.status = res.status; throw err;
+  }
+  paint([], tools.length ? "Recherche et réflexion…" : "Réflexion…");
+  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith("data:")) continue;
+      let d; try { d = JSON.parse(line.slice(5)); } catch { continue; }
+      const cand = d.candidates?.[0]; if (!cand) continue;
+      for (const part of cand.content?.parts || []) if (part.text && !part.thought) text += part.text;
+      for (const ch of cand.groundingMetadata?.groundingChunks || []) if (ch.web?.uri) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
+      for (const u of cand.urlContextMetadata?.urlMetadata || []) if (u.retrievedUrl) sources.set(u.retrievedUrl, u.retrievedUrl);
+      if (cand.finishReason === "SAFETY" || cand.finishReason === "PROHIBITED_CONTENT") text += "\n\n_Je ne peux pas répondre à cette demande._";
+      if (cand.finishReason === "MAX_TOKENS") text += "\n\n_(Réponse coupée car trop longue. Demande-moi de continuer.)_";
+      paint([{ type: "text", text }], text ? "" : "Recherche et réflexion…", [...sources].slice(0, 8));
+    }
+  }
+  if (!text) text = "_(Pas de réponse. Réessaie ou reformule.)_";
+  return { role: "assistant", content: [{ type: "text", text }], sources: [...sources].slice(0, 8) };
+}
+
 async function askGemini(c, paint) {
-  const model = settings.geminiModel || "gemini-flash-lite-latest";
   const contents = c.messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: textOf(m.content) || "…" }] }));
-  // Si un outil n'est pas disponible gratuitement pour ce modèle, on réessaie avec moins d'outils.
+  const first = settings.geminiModel || "gemini-flash-lite-latest";
+  const models = [first, ...rankModels(settings.geminiModels || []).filter(m => m !== first)].slice(0, 5);
+  // Outils à essayer, du plus complet au plus simple. On mémorise ce qui marche pour ne pas gaspiller de demandes.
   const toolSets = settings.web ? [[{ google_search: {} }, { url_context: {} }], [{ url_context: {} }], []] : [[]];
-  let lastErr;
-  for (const tools of toolSets) {
-    let text = "", sources = new Map();
-    try {
-      const res = await fetch(`${GEMINI}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": settings.geminiKey },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt() + (tools.length < 2 && settings.web ? "\n(La recherche Google n'est pas disponible pour ce modèle en ce moment : précise-le si on te demande une info récente.)" : "") }] },
-          contents,
-          ...(tools.length ? { tools } : {}),
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const err = new Error(body?.error?.message || `Erreur ${res.status}`); err.status = res.status; throw err;
+  const noSearch = settings.geminiNoSearch || {};
+  let lastErr, tries = 0;
+  for (const model of models) {
+    for (const tools of toolSets) {
+      if (tools.some(t => t.google_search) && noSearch[model]) continue;
+      if (++tries > 8) break;
+      try {
+        if (model !== first) paint([], `Essai avec un autre modèle gratuit (${model})…`);
+        const reply = await geminiStream(model, contents, tools, paint);
+        if (model !== settings.geminiModel) { settings.geminiModel = model; store.set("settings", settings); const sel = $("geminiModel"); if (sel) sel.value = model; }
+        return reply;
+      } catch (e) {
+        lastErr = e;
+        if (e instanceof TypeError || /api key/i.test(e.message) || ![400, 403, 404, 429].includes(e.status)) throw e;
+        if (tools.some(t => t.google_search)) { noSearch[model] = true; settings.geminiNoSearch = noSearch; store.set("settings", settings); }
+        // Modèle sans quota gratuit ("limit: 0") ou introuvable : inutile d'essayer d'autres outils, on passe au modèle suivant.
+        if (e.status === 404 || (/limit: ?0\b/i.test(e.message) && !/search|grounding/i.test(e.message))) break;
       }
-      paint([], tools.length ? "Recherche et réflexion…" : "Réflexion…");
-      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-          if (!line.startsWith("data:")) continue;
-          let d; try { d = JSON.parse(line.slice(5)); } catch { continue; }
-          const cand = d.candidates?.[0]; if (!cand) continue;
-          for (const part of cand.content?.parts || []) if (part.text && !part.thought) text += part.text;
-          for (const ch of cand.groundingMetadata?.groundingChunks || []) if (ch.web?.uri) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
-          for (const u of cand.urlContextMetadata?.urlMetadata || []) if (u.retrievedUrl) sources.set(u.retrievedUrl, u.retrievedUrl);
-          if (cand.finishReason === "SAFETY" || cand.finishReason === "PROHIBITED_CONTENT") text += "\n\n_Je ne peux pas répondre à cette demande._";
-          if (cand.finishReason === "MAX_TOKENS") text += "\n\n_(Réponse coupée car trop longue. Demande-moi de continuer.)_";
-          paint([{ type: "text", text }], text ? "" : "Recherche et réflexion…", [...sources].slice(0, 8));
-        }
-      }
-      if (!text) text = "_(Pas de réponse. Réessaie ou reformule.)_";
-      return { role: "assistant", content: [{ type: "text", text }], sources: [...sources].slice(0, 8) };
-    } catch (e) {
-      lastErr = e;
-      // On réessaie sans un outil seulement si c'est l'outil qui pose problème (400/403/429 avant toute réponse)
-      const toolIssue = (e.status === 400 || e.status === 403) || (e.status === 429 && /search|grounding|url/i.test(e.message));
-      if (!toolIssue || text || !tools.length || /api key/i.test(e.message)) throw e;
     }
   }
   throw lastErr;
@@ -438,21 +475,19 @@ async function loadGeminiModels() {
     const res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": settings.geminiKey } });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message || res.status);
-    const ver = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || "0");
-    const list = (data.models || [])
+    const labels = {};
+    const ids = (data.models || [])
       .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
-      .map(m => ({ id: m.name.replace(/^models\//, ""), label: m.displayName || m.name }))
-      .filter(m => m.id.startsWith("gemini") && !/tts|image|live|audio|embedding|robotics|computer/.test(m.id))
-      .sort((a, b) => (/latest/.test(b.id) - /latest/.test(a.id)) || ver(b.id) - ver(a.id) || a.id.localeCompare(b.id));
+      .map(m => { const id = m.name.replace(/^models\//, ""); labels[id] = m.displayName || id; return id; })
+      .filter(id => id.startsWith("gemini") && !/tts|image|live|audio|embedding|robotics|computer/.test(id));
+    const ranked = rankModels(ids);
+    settings.geminiModels = ranked;
     sel.innerHTML = "";
-    for (const m of list) { const o = document.createElement("option"); o.value = m.id; o.textContent = `${m.label} (${m.id})`; sel.appendChild(o); }
-    const pick = list.find(m => m.id === keep)
-      || list.find(m => m.id === "gemini-flash-lite-latest")
-      || list.find(m => /flash-lite/.test(m.id) && !/preview|exp/.test(m.id))
-      || list.find(m => m.id === "gemini-flash-latest")
-      || list.find(m => /flash/.test(m.id)) || list[0];
-    if (pick) { sel.value = pick.id; if (settings.geminiModel !== pick.id) { settings.geminiModel = pick.id; store.set("settings", settings); } }
-    $("geminiHint").textContent = "Clé valide ✓. Les modèles « Flash-Lite » ont le plus de demandes gratuites par jour.";
+    for (const id of ranked) { const o = document.createElement("option"); o.value = id; o.textContent = `${labels[id]} (${id})`; sel.appendChild(o); }
+    const pick = ranked.includes(keep) ? keep : ranked[0];
+    if (pick) { sel.value = pick; settings.geminiModel = pick; }
+    store.set("settings", settings);
+    $("geminiHint").textContent = "Clé valide ✓. Si un modèle n'est pas gratuit, le site en essaie un autre tout seul.";
   } catch (e) {
     sel.innerHTML = `<option value="${esc(keep || "gemini-flash-lite-latest")}">${esc(keep || "gemini-flash-lite-latest")}</option>`;
     $("geminiHint").innerHTML = `<span class="error">Impossible de vérifier la clé : ${esc(e.message || String(e))}</span>`;
@@ -520,6 +555,116 @@ $("wipe").onclick = () => {
   if ($("wipe").dataset.confirm !== "1") { $("wipe").dataset.confirm = "1"; $("wipe").textContent = "Confirmer : tout effacer ?"; return; }
   store.clear(); location.reload();
 };
+
+// ---------- Voix : dictée ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let listening = null; // {btn, target, stop()}
+
+function setMic(btn, on) { btn.classList.toggle("on", on); btn.textContent = on ? "⏹" : "🎤"; btn.title = on ? "Arrêter" : "Parler"; }
+function stopListening() { if (listening) listening.stop(); }
+function insertText(target, base, text) {
+  const sep = base && !/\s$/.test(base) ? " " : "";
+  target.value = base + sep + text;
+  target.dispatchEvent(new Event("input"));
+}
+
+function startSpeechRecognition(btn, target) {
+  const rec = new SR();
+  rec.lang = "fr-FR"; rec.interimResults = true; rec.continuous = true;
+  const base = target.value; let finalText = "";
+  let stopped = false;
+  rec.onresult = (e) => {
+    if (stopped) return;
+    let interim = ""; finalText = "";
+    for (let i = 0; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript; else interim += e.results[i][0].transcript;
+    }
+    insertText(target, base, (finalText + interim).trim());
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") alertVoice("Autorise le micro pour ce site (réglages du navigateur), puis réessaie.");
+    else if (e.error !== "no-speech" && e.error !== "aborted") alertVoice("Dictée interrompue (" + e.error + "). Réessaie.");
+  };
+  rec.onend = () => { setMic(btn, false); if (listening && listening.rec === rec) listening = null; target.dispatchEvent(new Event("change")); };
+  listening = { btn, rec, stop: () => { stopped = true; try { rec.stop(); } catch {} } };
+  setMic(btn, true);
+  rec.start();
+}
+
+// Solution de secours : on enregistre et on demande à Gemini de transcrire (gratuit avec la clé Gemini)
+async function startRecordingFallback(btn, target) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return alertVoice("Ce navigateur ne permet pas la dictée. Essaie avec Safari ou Chrome, ou utilise le micro du clavier.");
+  if (!settings.geminiKey) return alertVoice("Pour dicter sur ce navigateur, ajoute ta clé Gemini gratuite dans ⚙︎ Réglages.");
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return alertVoice("Autorise le micro pour ce site (réglages du navigateur), puis réessaie."); }
+  const rec = new MediaRecorder(stream); const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    listening = null; btn.textContent = "…"; btn.classList.remove("on"); btn.disabled = true;
+    try {
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      const b64 = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result.split(",")[1]); r.readAsDataURL(blob); });
+      const res = await fetch(`${GEMINI}/models/${encodeURIComponent(settings.geminiModel || "gemini-flash-lite-latest")}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": settings.geminiKey },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [
+          { inline_data: { mime_type: (rec.mimeType || "audio/webm").split(";")[0], data: b64 } },
+          { text: "Transcris exactement ce qui est dit dans cet audio (en français sauf si une autre langue est parlée). Réponds uniquement avec la transcription, sans commentaire." },
+        ] }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || res.status);
+      const t = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+      insertText(target, target.value, t);
+      target.dispatchEvent(new Event("change"));
+    } catch (e) { alertVoice("Transcription impossible : " + (e.message || e)); }
+    finally { btn.disabled = false; setMic(btn, false); }
+  };
+  listening = { btn, stop: () => { if (rec.state !== "inactive") rec.stop(); } };
+  setMic(btn, true);
+  rec.start();
+}
+
+function alertVoice(msg) { flash(msg); const ch = $("chat"); if ($("chat").classList.contains("active")) { const d = document.createElement("div"); d.className = "msg assistant error"; d.textContent = "🎤 " + msg; (ch.querySelector(".wrap") || ch).appendChild(d); ch.scrollTop = ch.scrollHeight; } }
+
+document.querySelectorAll(".mic").forEach(btn => btn.onclick = () => {
+  const target = $(btn.dataset.target);
+  if (listening) { const same = listening.btn === btn; stopListening(); if (same) return; }
+  stopSpeaking();
+  if (SR) startSpeechRecognition(btn, target); else startRecordingFallback(btn, target);
+});
+
+// ---------- Voix : lecture à voix haute ----------
+let speakingBtn = null;
+function plain(t) { return (t || "").replace(/```[\s\S]*?```/g, " (code) ").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/https?:\/\/\S+/g, "").replace(/[*_#>`|~]/g, "").replace(/\n{2,}/g, ". ").trim(); }
+function frVoice() { const v = speechSynthesis.getVoices(); return v.find(x => x.lang === "fr-FR" && /premium|enhanced|amélioré/i.test(x.name)) || v.find(x => x.lang === "fr-FR") || v.find(x => x.lang?.startsWith("fr")); }
+function stopSpeaking() { if (!("speechSynthesis" in window)) return; speechSynthesis.cancel(); if (speakingBtn) speakingBtn.textContent = "🔊 Écouter"; speakingBtn = null; }
+function unlockSpeech() { try { if ("speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance("")); } catch {} }
+function speak(text, btn) {
+  if (!("speechSynthesis" in window)) return flash("La lecture vocale n'est pas disponible sur ce navigateur.");
+  stopSpeaking();
+  // On découpe en phrases : certains navigateurs coupent les textes longs
+  const parts = plain(text).match(/[^.!?…]+[.!?…]*\s*/g) || [];
+  if (!parts.length) return;
+  speakingBtn = btn || null; if (btn) btn.textContent = "⏹ Arrêter";
+  parts.forEach((p, i) => {
+    const u = new SpeechSynthesisUtterance(p.trim());
+    u.lang = "fr-FR"; const v = frVoice(); if (v) u.voice = v;
+    if (i === parts.length - 1) u.onend = () => { if (speakingBtn === btn && btn) btn.textContent = "🔊 Écouter"; if (speakingBtn === btn) speakingBtn = null; };
+    speechSynthesis.speak(u);
+  });
+}
+function addSpeak(el, content) {
+  if (!("speechSynthesis" in window) || !textOf(content).trim()) return;
+  const b = document.createElement("button"); b.className = "speak"; b.type = "button"; b.textContent = "🔊 Écouter";
+  b.onclick = () => { if (speakingBtn === b) stopSpeaking(); else speak(textOf(content), b); };
+  el.appendChild(b);
+}
+if ("speechSynthesis" in window) speechSynthesis.getVoices();
+$("autoSpeak").checked = !!settings.autoSpeak;
+$("autoSpeak").onchange = (e) => { settings.autoSpeak = e.target.checked; saveSettings(); };
 
 marked.setOptions({ breaks: true });
 DOMPurify.addHook("afterSanitizeAttributes", (n) => { if (n.tagName === "A") { n.setAttribute("target", "_blank"); n.setAttribute("rel", "noopener"); } });
