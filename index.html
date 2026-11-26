@@ -86,9 +86,36 @@ ul.rules li span{flex:1;white-space:pre-wrap}
   <div class="view" id="settings">
     <div class="wrap">
       <section class="card warn">
-        <h2>🔑 Ma clé API Anthropic</h2>
-        <p class="hint">Crée une clé sur <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. Elle reste uniquement dans ce navigateur (jamais sur GitHub). Ne partage pas cet appareil ouvert, et mets une limite de dépense sur ta clé dans la console.</p>
-        <div class="row"><input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"><button id="showKey" class="icon" title="Afficher">👁</button></div>
+        <h2>🔑 Mon IA et ma clé</h2>
+        <label for="provider">Quelle IA utiliser ?</label>
+        <select id="provider">
+          <option value="gemini">Google Gemini (gratuit)</option>
+          <option value="claude">Claude d'Anthropic (payant, plus puissant)</option>
+        </select>
+        <div id="geminiBox">
+          <p class="hint" style="margin-top:10px">Clé gratuite : va sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>, connecte-toi avec ton compte Google, clique sur « Create API key », puis copie-la ici. Aucune carte bancaire n'est demandée.</p>
+          <div class="row"><input type="password" id="geminiKey" placeholder="AIza..." autocomplete="off"><button class="icon showKey" data-for="geminiKey" title="Afficher">👁</button></div>
+          <label for="geminiModel">Modèle Gemini</label>
+          <select id="geminiModel"></select>
+          <p class="hint" id="geminiHint" style="margin-top:6px">La liste des modèles se charge quand ta clé est enregistrée. Les modèles « Flash-Lite » ont le plus de demandes gratuites par jour.</p>
+        </div>
+        <div id="claudeBox">
+          <p class="hint" style="margin-top:10px">Crée une clé sur <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. C'est payant à l'usage : mets une limite de dépense sur ta clé.</p>
+          <div class="row"><input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"><button class="icon showKey" data-for="apiKey" title="Afficher">👁</button></div>
+          <label for="model">Modèle Claude</label>
+          <select id="model">
+            <option value="claude-opus-5-5">Claude Opus 5.5 (recommandé)</option>
+            <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (moins cher)</option>
+            <option value="claude-haiku-5-5">Claude Haiku 5.5 (très rapide, très peu cher)</option>
+          </select>
+          <label for="effort">Niveau de réflexion</label>
+          <select id="effort">
+            <option value="low">Rapide</option>
+            <option value="medium">Normal</option>
+            <option value="high">Approfondi</option>
+          </select>
+        </div>
+        <p class="hint" style="margin-top:10px">Tes clés restent uniquement dans ce navigateur, jamais sur GitHub. Garde ton appareil verrouillé.</p>
       </section>
 
       <section class="card">
@@ -105,19 +132,7 @@ ul.rules li span{flex:1;white-space:pre-wrap}
       </section>
 
       <section class="card">
-        <h2>⚙︎ Modèle</h2>
-        <label for="model">Modèle</label>
-        <select id="model">
-          <option value="claude-opus-5-5">Claude Opus 5.5 (recommandé)</option>
-          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (moins cher)</option>
-          <option value="claude-haiku-5-5">Claude Haiku 5.5 (très rapide, très peu cher)</option>
-        </select>
-        <label for="effort">Niveau de réflexion</label>
-        <select id="effort">
-          <option value="low">Rapide</option>
-          <option value="medium">Normal</option>
-          <option value="high">Approfondi</option>
-        </select>
+        <h2>🌐 Web</h2>
         <label><input type="checkbox" id="webOn"> Autoriser la recherche web et la lecture de liens</label>
       </section>
 
@@ -150,7 +165,7 @@ const store = {
 
 // ---------- State ----------
 let settings = Object.assign(
-  { apiKey: "", model: "claude-opus-5-5", effort: "medium", web: true, about: "", rules: [] },
+  { provider: "gemini", geminiKey: "", geminiModel: "", apiKey: "", model: "claude-opus-5-5", effort: "medium", web: true, about: "", rules: [] },
   store.get("settings", {})
 );
 let convs = store.get("convs", []);   // [{id,title,updated,messages:[{role,content}]}]
@@ -208,10 +223,10 @@ function sourcesOf(content) {
   return [...seen].slice(0, 8);
 }
 
-function assistantHTML(content, status) {
+function assistantHTML(content, status, extraSources) {
   let h = status ? `<div class="status">${esc(status)}</div>` : "";
   h += md(textOf(content));
-  const src = sourcesOf(content);
+  const src = extraSources || sourcesOf(content);
   if (src.length) h += `<div class="sources">Sources : ${src.map(([u, t]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(t)}</a>`).join(" · ")}</div>`;
   return h;
 }
@@ -233,7 +248,7 @@ function renderChat() {
   chat.innerHTML = "";
   const c = current();
   if (!c || !c.messages.length) {
-    const needKey = !settings.apiKey;
+    const needKey = !activeKey();
     chat.innerHTML = `<div class="empty"><h2>Que veux-tu que je fasse ?</h2>
       <p>${needKey ? "Commence par ajouter ta clé API dans ⚙︎ Réglages." : "Recherches, vérification d'un lien, rédaction, n'importe quel travail."}</p>
       <div class="chips">
@@ -251,7 +266,7 @@ function renderChat() {
     if (m.role === "user" && typeof m.content === "string") {
       const d = document.createElement("div"); d.className = "msg user"; d.textContent = m.content; w.appendChild(d);
     } else if (m.role === "assistant") {
-      const d = document.createElement("div"); d.className = "msg assistant"; d.innerHTML = assistantHTML(m.content); w.appendChild(d);
+      const d = document.createElement("div"); d.className = "msg assistant"; d.innerHTML = assistantHTML(m.content, "", m.sources); w.appendChild(d);
     }
   }
   chat.appendChild(w);
@@ -259,9 +274,25 @@ function renderChat() {
 }
 
 // ---------- Sending ----------
+function activeKey() { return settings.provider === "claude" ? settings.apiKey : settings.geminiKey; }
+
+function friendlyError(e) {
+  let msg = e?.message || String(e);
+  if (e instanceof Anthropic.AuthenticationError) return "Clé API Claude invalide. Vérifie-la dans ⚙︎ Réglages.";
+  if (e instanceof Anthropic.RateLimitError) return "Trop de demandes d'un coup. Réessaie dans un instant.";
+  if (e instanceof Anthropic.APIConnectionError) return "Connexion impossible. Vérifie ta connexion internet.";
+  if (/credit balance/i.test(msg)) return "Crédit insuffisant sur ton compte Anthropic.";
+  if (e.status === 429) return "Limite gratuite de Gemini atteinte pour le moment. Attends une minute (ou demain si c'est la limite du jour), ou choisis un autre modèle Gemini dans ⚙︎ Réglages.";
+  if (e.status === 400 && /api key/i.test(msg)) return "Clé Gemini invalide. Vérifie-la dans ⚙︎ Réglages.";
+  if (e.status === 403) return "Clé Gemini refusée. Vérifie-la dans ⚙︎ Réglages.";
+  if (e.status === 404) return "Ce modèle Gemini n'existe plus. Choisis-en un autre dans ⚙︎ Réglages.";
+  if (e instanceof TypeError) return "Connexion impossible. Vérifie ta connexion internet.";
+  return msg;
+}
+
 async function send(text) {
   if (busy || !text.trim()) return;
-  if (!settings.apiKey) { showSettings(true); flash("Ajoute d'abord ta clé API."); return; }
+  if (!activeKey()) { showSettings(true); flash("Ajoute d'abord ta clé dans les réglages."); return; }
   let c = current();
   if (!c) {
     c = { id: crypto.randomUUID(), title: text.slice(0, 40), updated: Date.now(), messages: [] };
@@ -277,68 +308,154 @@ async function send(text) {
   bubble.innerHTML = `<div class="status">Réflexion…</div>`;
   $("chat").querySelector(".wrap").appendChild(bubble);
   $("chat").scrollTop = $("chat").scrollHeight;
+  const paint = (content, status, sources) => {
+    bubble.innerHTML = assistantHTML(content, status, sources);
+    const ch = $("chat"); if (ch.scrollHeight - ch.scrollTop - ch.clientHeight < 200) ch.scrollTop = ch.scrollHeight;
+  };
 
+  try {
+    const reply = settings.provider === "claude" ? await askClaude(c, paint) : await askGemini(c, paint);
+    c.messages.push(reply);
+    c.updated = Date.now();
+    saveConvs();
+    bubble.innerHTML = assistantHTML(reply.content, "", reply.sources);
+  } catch (e) {
+    c.messages.pop(); // on retire la question sans réponse pour garder l'historique valide
+    saveConvs();
+    bubble.innerHTML = `<div class="error">⚠️ ${esc(friendlyError(e))}</div>`;
+    $("input").value = text;
+  } finally {
+    busy = false; $("sendBtn").disabled = false;
+  }
+}
+
+// ----- Claude (Anthropic) -----
+async function askClaude(c, paint) {
   const client = new Anthropic({ apiKey: settings.apiKey, dangerouslyAllowBrowser: true });
   const tools = settings.web ? [
     { type: "web_search_20260209", name: "web_search", max_uses: 8 },
     { type: "web_fetch_20260209", name: "web_fetch", max_uses: 6 },
   ] : [];
-
-  // Messages envoyés à l'API (on garde le contenu brut, y compris les blocs de réflexion)
+  const history = c.messages.map(m => ({ role: m.role, content: m.content }));
   let collected = [];   // blocs de la réponse en cours (sur plusieurs reprises pause_turn)
-  try {
-    for (let round = 0; round < 5; round++) {
-      const msgs = c.messages.concat(collected.length ? [{ role: "assistant", content: collected }] : []);
-      const stream = client.beta.messages.stream({
-        model: settings.model,
-        max_tokens: 32000,
-        system: systemPrompt(),
-        thinking: { type: "adaptive" },
-        output_config: { effort: settings.effort },
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        tools,
-        messages: msgs,
-      });
-      let status = "Réflexion…", live = "";
-      stream.on("streamEvent", (ev) => {
-        if (ev.type === "content_block_start") {
-          const t = ev.content_block.type;
-          if (t === "server_tool_use") status = ev.content_block.name === "web_fetch" ? "Lecture du lien…" : "Recherche sur le web…";
-          else if (t === "thinking") status = "Réflexion…";
-          else if (t === "text") status = "";
-        }
-        if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") live += ev.delta.text;
-        bubble.innerHTML = assistantHTML(collected.concat(live ? [{ type: "text", text: live }] : []), status);
-        const ch = $("chat"); if (ch.scrollHeight - ch.scrollTop - ch.clientHeight < 200) ch.scrollTop = ch.scrollHeight;
-      });
-      const final = await stream.finalMessage();
-      collected = collected.concat(final.content);
-      if (final.stop_reason === "refusal") {
-        collected.push({ type: "text", text: "\n\n_Je ne peux pas répondre à cette demande._" });
-        break;
+  for (let round = 0; round < 5; round++) {
+    const msgs = history.concat(collected.length ? [{ role: "assistant", content: collected }] : []);
+    const stream = client.beta.messages.stream({
+      model: settings.model,
+      max_tokens: 32000,
+      system: systemPrompt(),
+      thinking: { type: "adaptive" },
+      output_config: { effort: settings.effort },
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      tools,
+      messages: msgs,
+    });
+    let status = "Réflexion…", live = "";
+    stream.on("streamEvent", (ev) => {
+      if (ev.type === "content_block_start") {
+        const t = ev.content_block.type;
+        if (t === "server_tool_use") status = ev.content_block.name === "web_fetch" ? "Lecture du lien…" : "Recherche sur le web…";
+        else if (t === "thinking") status = "Réflexion…";
+        else if (t === "text") status = "";
       }
-      if (final.stop_reason !== "pause_turn") {
-        if (final.stop_reason === "max_tokens") collected.push({ type: "text", text: "\n\n_(Réponse coupée car trop longue. Demande-moi de continuer.)_" });
-        break;
-      }
+      if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") live += ev.delta.text;
+      paint(collected.concat(live ? [{ type: "text", text: live }] : []), status);
+    });
+    const final = await stream.finalMessage();
+    collected = collected.concat(final.content);
+    if (final.stop_reason === "refusal") { collected.push({ type: "text", text: "\n\n_Je ne peux pas répondre à cette demande._" }); break; }
+    if (final.stop_reason !== "pause_turn") {
+      if (final.stop_reason === "max_tokens") collected.push({ type: "text", text: "\n\n_(Réponse coupée car trop longue. Demande-moi de continuer.)_" });
+      break;
     }
-    c.messages.push({ role: "assistant", content: collected });
-    c.updated = Date.now();
-    saveConvs();
-    bubble.innerHTML = assistantHTML(collected);
+  }
+  return { role: "assistant", content: collected };
+}
+
+// ----- Gemini (Google) -----
+const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
+
+async function askGemini(c, paint) {
+  const model = settings.geminiModel || "gemini-flash-lite-latest";
+  const contents = c.messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: textOf(m.content) || "…" }] }));
+  // Si un outil n'est pas disponible gratuitement pour ce modèle, on réessaie avec moins d'outils.
+  const toolSets = settings.web ? [[{ google_search: {} }, { url_context: {} }], [{ url_context: {} }], []] : [[]];
+  let lastErr;
+  for (const tools of toolSets) {
+    let text = "", sources = new Map();
+    try {
+      const res = await fetch(`${GEMINI}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": settings.geminiKey },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt() + (tools.length < 2 && settings.web ? "\n(La recherche Google n'est pas disponible pour ce modèle en ce moment : précise-le si on te demande une info récente.)" : "") }] },
+          contents,
+          ...(tools.length ? { tools } : {}),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const err = new Error(body?.error?.message || `Erreur ${res.status}`); err.status = res.status; throw err;
+      }
+      paint([], tools.length ? "Recherche et réflexion…" : "Réflexion…");
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith("data:")) continue;
+          let d; try { d = JSON.parse(line.slice(5)); } catch { continue; }
+          const cand = d.candidates?.[0]; if (!cand) continue;
+          for (const part of cand.content?.parts || []) if (part.text && !part.thought) text += part.text;
+          for (const ch of cand.groundingMetadata?.groundingChunks || []) if (ch.web?.uri) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
+          for (const u of cand.urlContextMetadata?.urlMetadata || []) if (u.retrievedUrl) sources.set(u.retrievedUrl, u.retrievedUrl);
+          if (cand.finishReason === "SAFETY" || cand.finishReason === "PROHIBITED_CONTENT") text += "\n\n_Je ne peux pas répondre à cette demande._";
+          if (cand.finishReason === "MAX_TOKENS") text += "\n\n_(Réponse coupée car trop longue. Demande-moi de continuer.)_";
+          paint([{ type: "text", text }], text ? "" : "Recherche et réflexion…", [...sources].slice(0, 8));
+        }
+      }
+      if (!text) text = "_(Pas de réponse. Réessaie ou reformule.)_";
+      return { role: "assistant", content: [{ type: "text", text }], sources: [...sources].slice(0, 8) };
+    } catch (e) {
+      lastErr = e;
+      // On réessaie sans un outil seulement si c'est l'outil qui pose problème (400/403/429 avant toute réponse)
+      const toolIssue = (e.status === 400 || e.status === 403) || (e.status === 429 && /search|grounding|url/i.test(e.message));
+      if (!toolIssue || text || !tools.length || /api key/i.test(e.message)) throw e;
+    }
+  }
+  throw lastErr;
+}
+
+async function loadGeminiModels() {
+  const sel = $("geminiModel");
+  const keep = settings.geminiModel;
+  if (!settings.geminiKey) { sel.innerHTML = `<option value="">(ajoute ta clé d'abord)</option>`; return; }
+  try {
+    const res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": settings.geminiKey } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || res.status);
+    const ver = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || "0");
+    const list = (data.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+      .map(m => ({ id: m.name.replace(/^models\//, ""), label: m.displayName || m.name }))
+      .filter(m => m.id.startsWith("gemini") && !/tts|image|live|audio|embedding|robotics|computer/.test(m.id))
+      .sort((a, b) => (/latest/.test(b.id) - /latest/.test(a.id)) || ver(b.id) - ver(a.id) || a.id.localeCompare(b.id));
+    sel.innerHTML = "";
+    for (const m of list) { const o = document.createElement("option"); o.value = m.id; o.textContent = `${m.label} (${m.id})`; sel.appendChild(o); }
+    const pick = list.find(m => m.id === keep)
+      || list.find(m => m.id === "gemini-flash-lite-latest")
+      || list.find(m => /flash-lite/.test(m.id) && !/preview|exp/.test(m.id))
+      || list.find(m => m.id === "gemini-flash-latest")
+      || list.find(m => /flash/.test(m.id)) || list[0];
+    if (pick) { sel.value = pick.id; if (settings.geminiModel !== pick.id) { settings.geminiModel = pick.id; store.set("settings", settings); } }
+    $("geminiHint").textContent = "Clé valide ✓. Les modèles « Flash-Lite » ont le plus de demandes gratuites par jour.";
   } catch (e) {
-    c.messages.pop(); // on retire la question sans réponse pour garder l'historique valide
-    saveConvs();
-    let msg = e?.message || String(e);
-    if (e instanceof Anthropic.AuthenticationError) msg = "Clé API invalide. Vérifie-la dans ⚙︎ Réglages.";
-    else if (e instanceof Anthropic.RateLimitError) msg = "Trop de demandes d'un coup. Réessaie dans un instant.";
-    else if (e instanceof Anthropic.APIConnectionError) msg = "Connexion impossible. Vérifie ta connexion internet.";
-    else if (/credit balance/i.test(msg)) msg = "Crédit insuffisant sur ton compte Anthropic. Ajoute du crédit dans la console.";
-    bubble.innerHTML = `<div class="error">⚠️ ${esc(msg)}</div>`;
-    $("input").value = text;
-  } finally {
-    busy = false; $("sendBtn").disabled = false;
+    sel.innerHTML = `<option value="${esc(keep || "gemini-flash-lite-latest")}">${esc(keep || "gemini-flash-lite-latest")}</option>`;
+    $("geminiHint").innerHTML = `<span class="error">Impossible de vérifier la clé : ${esc(e.message || String(e))}</span>`;
   }
 }
 
@@ -365,7 +482,15 @@ $("input").addEventListener("input", autoGrow);
 // Settings fields
 $("apiKey").value = settings.apiKey;
 $("apiKey").onchange = (e) => { settings.apiKey = e.target.value.trim(); saveSettings(); };
-$("showKey").onclick = () => { const k = $("apiKey"); k.type = k.type === "password" ? "text" : "password"; };
+$("geminiKey").value = settings.geminiKey;
+$("geminiKey").onchange = (e) => { settings.geminiKey = e.target.value.trim(); saveSettings(); loadGeminiModels(); };
+$("geminiModel").onchange = (e) => { settings.geminiModel = e.target.value; saveSettings(); };
+document.querySelectorAll(".showKey").forEach(b => b.onclick = () => { const k = $(b.dataset.for); k.type = k.type === "password" ? "text" : "password"; });
+function showProvider() { $("geminiBox").style.display = settings.provider === "gemini" ? "" : "none"; $("claudeBox").style.display = settings.provider === "claude" ? "" : "none"; }
+$("provider").value = settings.provider;
+$("provider").onchange = (e) => { settings.provider = e.target.value; saveSettings(); showProvider(); };
+showProvider();
+loadGeminiModels();
 $("model").value = settings.model;
 $("model").onchange = (e) => { settings.model = e.target.value; saveSettings(); };
 $("effort").value = settings.effort;
@@ -399,8 +524,7 @@ $("wipe").onclick = () => {
 marked.setOptions({ breaks: true });
 DOMPurify.addHook("afterSanitizeAttributes", (n) => { if (n.tagName === "A") { n.setAttribute("target", "_blank"); n.setAttribute("rel", "noopener"); } });
 renderConvList();
-showSettings(!settings.apiKey);
-if (!settings.apiKey) flash("");
+showSettings(!activeKey());
 </script>
 </body>
 </html>
